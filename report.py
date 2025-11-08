@@ -1,5 +1,6 @@
 import os
 import csv
+from pathlib import Path
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -11,7 +12,6 @@ import random
 from collections import defaultdict
 from datetime import datetime
 from CONFIG import *
-import glob
 import textwrap
 import pandas as pd
 from typing import List, Dict, Any
@@ -250,9 +250,10 @@ def create_detailed_section(title, records, max_rows=8, max_table_width=7.0*inch
     
     return elements
 
-def create_pdf_report(all_data, folderid):
+def create_pdf_report(all_data, folder_path):
     """Create PDF report from processed data"""
-    doc = SimpleDocTemplate(f'{folderid}/anomaly_output.pdf', pagesize=A4)
+    folder_path = Path(folder_path)
+    doc = SimpleDocTemplate(str(folder_path / "anomaly_output.pdf"), pagesize=A4)
     styles = getSampleStyleSheet()
     story = []
     
@@ -303,11 +304,12 @@ def create_pdf_report(all_data, folderid):
     story.append(Spacer(1, 25))
     
     # Configuration info in a more compact format
+    folder_label = folder_path.name or folder_path.as_posix()
     config_text = f"""
     <b>Analysis Configuration:</b><br/>
     Non-anomaly keywords: {', '.join([load_config()[4]])}<br/>
     Normal sample size: {CONFIG['normal_sample_size']}<br/>
-    BatchBLAST ID: {folderid}
+    BatchBLAST ID: {folder_label}
     """
     story.append(Paragraph(config_text, styles['Normal']))
     story.append(Spacer(1, 20))
@@ -450,24 +452,23 @@ def analyze_anomaly_patterns(all_data):
     
     return dict(anomaly_species)
 
-def generate_report(folderid):
-    results_folder = folderid
-    if not os.path.exists(results_folder):
+def generate_report(folder_path):
+    results_folder = Path(folder_path)
+    if not results_folder.exists():
         return 1
-    
-    csv_files = [f for f in os.listdir(results_folder) if f.endswith('.csv')]
-    
+
+    csv_files = sorted(results_folder.glob('*.csv'))
+
     if not csv_files:
         return 1
-    
+
     all_data = []
-    
+
     for csv_file in csv_files:
-        csv_path = os.path.join(results_folder, csv_file)
-        data = process_csv_file(csv_path)
+        data = process_csv_file(str(csv_file))
         all_data.append(data)
 
-    create_pdf_report(all_data, folderid)
+    create_pdf_report(all_data, results_folder)
 
 class BLASTReportGenerator:
     def __init__(self, output_filename: str = "BLAST_Report.pdf"):
@@ -498,20 +499,20 @@ class BLASTReportGenerator:
             spaceAfter=6
         ))
 
-    def read_csv_files(self, folder_path: str) -> Dict[str, pd.DataFrame]:
+    def read_csv_files(self, folder_path: Path) -> Dict[str, pd.DataFrame]:
         try:
-            csv_pattern = os.path.join(folder_path, "*.csv")
-            csv_files = glob.glob(csv_pattern)
-            
+            folder = Path(folder_path)
+            csv_files = sorted(folder.glob("*.csv"))
+
             if not csv_files:
                 raise FileNotFoundError(f"No CSV files found in {folder_path}")
-            
-            
+
+
             dataframes = {}
             for csv_file in csv_files:
-                filename = os.path.basename(csv_file)
-                filename_without_ext = os.path.splitext(filename)[0]
-                
+                filename = csv_file.name
+                filename_without_ext = csv_file.stem
+
                 df = pd.read_csv(csv_file)
                 # Select only the required columns
                 required_columns = [
@@ -739,20 +740,20 @@ class BLASTReportGenerator:
         
         return elements
 
-    def generate_report(self, folder_path: str) -> str:
+    def generate_report(self, folder_path: Path) -> str:
         try:
             # Read and process data
             dataframes = self.read_csv_files(folder_path)
-            
+
             if not dataframes:
                 raise ValueError("No valid CSV files with required columns found")
-                
+
             stats = self.generate_summary_stats(dataframes)
-            
+
             # Set up PDF document
-            output_path = os.path.join(folder_path, self.output_filename)
+            output_path = Path(folder_path) / self.output_filename
             doc = SimpleDocTemplate(
-                output_path,
+                str(output_path),
                 pagesize=A4,
                 topMargin=0.5*inch,
                 bottomMargin=0.5*inch
@@ -771,15 +772,16 @@ class BLASTReportGenerator:
             # Generate PDF
             doc.build(story)
             
-            return output_path
-            
+            return str(output_path)
+
         except Exception as e:
             raise
 
-def generate_blast_full_report(folder_path: str, output_filename: str = "BLAST_Full_Report.pdf") -> str:
-    if not os.path.exists(folder_path):
+def generate_blast_full_report(folder_path: Path, output_filename: str = "BLAST_Full_Report.pdf") -> str:
+    folder = Path(folder_path)
+    if not folder.exists():
         raise ValueError(f"Folder path does not exist: {folder_path}")
-    
+
     generator = BLASTReportGenerator(output_filename)
-    return generator.generate_report(folder_path)
+    return generator.generate_report(folder)
 
