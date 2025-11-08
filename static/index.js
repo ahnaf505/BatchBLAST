@@ -616,13 +616,16 @@ function applyConfigToInputs(config) {
     }
 }
 
-function setConfigValues(config) {
+function setConfigValues(config, options = {}) {
+    const { silent = false } = options;
     const normalized = normalizeConfig(config);
     configCache = { ...configCache, ...normalized };
     applyConfigToInputs(normalized);
     configReady = true;
 
-    if (normalized.nonAnomaly || normalized.speciesName) {
+    if (silent) {
+        showHeuristicStatus('hidden');
+    } else if (normalized.nonAnomaly || normalized.speciesName) {
         showHeuristicStatus('success', 'Synced');
     } else {
         showHeuristicStatus('idle', 'Add values to begin auto-save');
@@ -672,9 +675,9 @@ async function persistConfig(overrides = {}) {
     }
 
     if (data?.config) {
-        setConfigValues(data.config);
+        setConfigValues(data.config, { silent: true });
     } else {
-        setConfigValues(payload);
+        setConfigValues(payload, { silent: true });
     }
 
     return data;
@@ -707,6 +710,7 @@ if (saveConfigBtn) {
             saveConfigBtn.disabled = true;
 
             await persistConfig(config);
+            showHeuristicStatus('success', 'Saved');
 
             setConfigStatus('Configuration saved successfully.', 'success');
             setTimeout(() => {
@@ -879,7 +883,7 @@ document.addEventListener('DOMContentLoaded', function() {
             return response.json();
         })
         .then(config => {
-            setConfigValues(config);
+            setConfigValues(config, { silent: true });
         })
         .catch(error => {
             console.error('Config fetch error:', error);
@@ -897,7 +901,7 @@ const debounceHeuristicSave = debounce(async () => {
     const species = (speciesNameInlineInput?.value || '').trim();
 
     if (!keyword || !species) {
-        showHeuristicStatus('idle', 'Fill both fields to auto-save');
+        showHeuristicStatus('hidden');
         return;
     }
 
@@ -914,6 +918,9 @@ const debounceHeuristicSave = debounce(async () => {
 if (nonAnomalyInlineInput) {
     nonAnomalyInlineInput.addEventListener('input', () => {
         configCache.nonAnomaly = nonAnomalyInlineInput.value;
+        if (configReady) {
+            showHeuristicStatus('hidden');
+        }
         debounceHeuristicSave();
     });
 }
@@ -921,6 +928,9 @@ if (nonAnomalyInlineInput) {
 if (speciesNameInlineInput) {
     speciesNameInlineInput.addEventListener('input', () => {
         configCache.speciesName = speciesNameInlineInput.value;
+        if (configReady) {
+            showHeuristicStatus('hidden');
+        }
         debounceHeuristicSave();
     });
 }
