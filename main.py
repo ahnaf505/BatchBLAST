@@ -1,21 +1,38 @@
 #from search import search
 
-from fastapi import FastAPI, WebSocket, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, WebSocket, Request, HTTPException
+from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import FileResponse, StreamingResponse
 import uvicorn
 from io import BytesIO
 from pathlib import Path
-import os
 from blast import *
 
 app = FastAPI()
 
+RESULTS_DIR = (Path.cwd() / "blast_res").resolve()
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
 # Use current directory for templates
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+def resolve_results_folder(folder_id: str) -> Path:
+    raw_path = Path(folder_id)
+    if not raw_path.is_absolute():
+        resolved = (Path.cwd() / raw_path).resolve()
+    else:
+        resolved = raw_path.resolve()
+
+    try:
+        resolved.relative_to(RESULTS_DIR)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid folder path")
+
+    return resolved
 
 @app.get("/", response_class=HTMLResponse)
 async def get_home(request: Request):
@@ -27,74 +44,75 @@ async def getconfig(request: Request):
 
 @app.get("/download")
 async def download_endpoint(request: Request, type: int, folderid: str):
+    folder_path = resolve_results_folder(folderid)
+    folder_label = folder_path.name or folder_path.as_posix()
+
     if type == 1:
-        csv_list = os.listdir(folderid)
-        csv_paths = []
-        for csv in csv_list:
-            if csv[-3:] == "csv":
-                csv_paths.append(f'{folderid}/{csv}')
+        csv_paths = sorted(folder_path.glob("*.csv"))
         zip_buffer = BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
             for file_path in csv_paths:
-                if os.path.exists(file_path):
-                    zipf.write(file_path, arcname=os.path.basename(file_path))
-    
+                if file_path.exists():
+                    zipf.write(file_path, arcname=file_path.name)
+
         zip_buffer.seek(0)
-    
+
         # Return as streaming ZIP response
         return StreamingResponse(
             zip_buffer,
             media_type="application/x-zip-compressed",
-            headers={"Content-Disposition": f"attachment; filename={folderid}_csv_bundle.zip"}
+            headers={"Content-Disposition": f"attachment; filename={folder_label}_csv_bundle.zip"}
         )
         print("download req for CSV")
     elif type == 2:
         return FileResponse(
-            f'{folderid}/BLAST_Full_Report.pdf',
+            str(folder_path / "BLAST_Full_Report.pdf"),
             media_type='application/pdf',
-            filename=f'{folderid}_full_report.pdf',
+            filename=f'{folder_label}_full_report.pdf',
             headers={
-                'Content-Disposition': f'attachment; filename="{folderid}_full_report.pdf"'
+                'Content-Disposition': f'attachment; filename="{folder_label}_full_report.pdf"'
             }
         )
     elif type == 3:
         return FileResponse(
-            f'{folderid}/anomaly_output.pdf',
+            str(folder_path / "anomaly_output.pdf"),
             media_type='application/pdf',
-            filename=f'{folderid}_anomaly_report.pdf',
+            filename=f'{folder_label}_anomaly_report.pdf',
             headers={
-                'Content-Disposition': f'attachment; filename="{folderid}_anomaly_report.pdf"'
+                'Content-Disposition': f'attachment; filename="{folder_label}_anomaly_report.pdf"'
             }
         )
     elif type == 4:
         return FileResponse(
-            f'{folderid}/inputs.fasta',
+            str(folder_path / "inputs.fasta"),
             media_type='chemical/seq-na-fasta',
-            filename=f'{folderid}_inputs.fasta',
+            filename=f'{folder_label}_inputs.fasta',
             headers={
-                'Content-Disposition': f'attachment; filename="{folderid}_inputs.fasta"'
+                'Content-Disposition': f'attachment; filename="{folder_label}_inputs.fasta"'
             }
         )
 
 @app.get("/preview")
 async def download_endpoint(request: Request, type: int, folderid: str):
+    folder_path = resolve_results_folder(folderid)
+    folder_label = folder_path.name or folder_path.as_posix()
     if type == 2:
         return FileResponse(
-            f'{folderid}/BLAST_Full_Report.pdf',
+            str(folder_path / "BLAST_Full_Report.pdf"),
             media_type='application/pdf',
-            filename=f'{folderid}_full_report.pdf',
+            filename=f'{folder_label}_full_report.pdf',
             headers = {
-                'Content-Disposition': f'inline; filename="{folderid}_anomaly_report.pdf"',
+                'Content-Disposition': f'inline; filename="{folder_label}_anomaly_report.pdf"',
                 'Content-Type': 'application/pdf'
             }
         )
     elif type == 3:
         return FileResponse(
-            f'{folderid}/anomaly_output.pdf',
+            str(folder_path / "anomaly_output.pdf"),
             media_type='application/pdf',
-            filename=f'{folderid}_anomaly_report.pdf',
+            filename=f'{folder_label}_anomaly_report.pdf',
             headers = {
-                'Content-Disposition': f'inline; filename="{folderid}_anomaly_report.pdf"',
+                'Content-Disposition': f'inline; filename="{folder_label}_anomaly_report.pdf"',
                 'Content-Type': 'application/pdf'
             }
         )

@@ -6,18 +6,18 @@ import httpx
 import time
 import json
 import io
-import os
 import csv
 import zipfile
 import asyncio
+from pathlib import Path
 
 from CONFIG import *
 from report import *
 
 async def send_blast(fasta_string):
     folder_name = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
-    folder_name = "blast_res/"+folder_name
-    os.makedirs(folder_name, exist_ok=True)
+    folder_path = Path("blast_res") / folder_name
+    folder_path.mkdir(parents=True, exist_ok=True)
     async with httpx.AsyncClient() as client:
         headers = {
             "User-Agent": "Mozilla/5.0"
@@ -41,7 +41,7 @@ async def send_blast(fasta_string):
                 break
         rid_match = re.search(r'name="RID"\s+[^>]*value="([A-Z0-9]+)"', resp.text)
         rid = rid_match.group(1)
-        return rid, folder_name
+        return rid, folder_path
 
 async def check_blast(rid):
     async with httpx.AsyncClient() as client:
@@ -68,6 +68,8 @@ async def check_blast(rid):
             return 1, poll.content
 
 def parse_blast(content, folderid):
+    folder_path = Path(folderid)
+    folder_path.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(io.BytesIO(content)) as zf:
         for name in zf.namelist():
             if not name.lower().endswith(".json"):
@@ -115,8 +117,8 @@ def parse_blast(content, folderid):
                     "evalue": hsps.get("evalue", "")
                 })
     
-            csv_path = os.path.join(folderid, safe_filename)
-            with open(f'{csv_path}.csv', "w", newline="", encoding="utf-8") as csvfile:
+            csv_path = folder_path / f"{safe_filename}.csv"
+            with csv_path.open("w", newline="", encoding="utf-8") as csvfile:
                 fieldnames = [
                     "query_id", "query_title", "subject_id", "subject_accession",
                     "subject_title", "taxid", "sci_name", "identity_pct",
@@ -128,17 +130,19 @@ def parse_blast(content, folderid):
                     writer.writerows(rows)
 
 def write_fasta(fasta_string, folder_path):
-    with open(folder_path+"/inputs.fasta", 'w+') as f:
-        f.write(fasta_string)
+    folder = Path(folder_path)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "inputs.fasta").write_text(fasta_string)
 
 async def run_blast_job(data, websocket):
     content_ = ""
     try:
         await websocket.send_text(json.dumps(["Running BLAST NCBI...", "Server is running mass BLAST operation."]))
-        rid, folderid = await send_blast(data)
-        write_fasta(data, folderid)
-        await websocket.send_text(json.dumps(["folderid", folderid]))
-        await websocket.send_text(json.dumps(["Waiting for BLAST Result...", f"BLAST NCBI Request ID: {rid}", f"BatchBLAST ID: {folderid}", " This may take up 5 minutes"]))
+        rid, folder_path = await send_blast(data)
+        write_fasta(data, folder_path)
+        folder_display = folder_path.as_posix()
+        await websocket.send_text(json.dumps(["folderid", folder_display]))
+        await websocket.send_text(json.dumps(["Waiting for BLAST Result...", f"BLAST NCBI Request ID: {rid}", f"BatchBLAST ID: {folder_display}", " This may take up 5 minutes"]))
         
         while True:
             code, content = await check_blast(rid)
@@ -153,10 +157,10 @@ async def run_blast_job(data, websocket):
                 break
         
         await websocket.send_text(json.dumps(["BLAST Completed...", "Processing result."]))
-        parse_blast(content_, folderid)
+        parse_blast(content_, folder_path)
         await websocket.send_text(json.dumps(["Parsing Completed...", "BLAST Result successfully parsed, making reports."]))
-        generate_report(folderid)
-        generate_blast_full_report(folderid)
+        generate_report(folder_path)
+        generate_blast_full_report(folder_path)
         await websocket.send_text(json.dumps(["Successfully completed mass BLAST", "Mass BLAST is completed successfully and you can download the reports."]))
     except Exception as e:
         with open("error.log", 'w+') as f:
