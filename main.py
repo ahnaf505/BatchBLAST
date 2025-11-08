@@ -1,7 +1,7 @@
 #from search import search
 
 from fastapi import FastAPI, WebSocket, Request, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import FileResponse, StreamingResponse
@@ -9,6 +9,7 @@ import uvicorn
 from io import BytesIO
 from pathlib import Path
 from blast import *
+from CONFIG import load_config, load_config_dict, save_config
 
 app = FastAPI()
 
@@ -40,7 +41,33 @@ async def get_home(request: Request):
 
 @app.get("/getconfig")
 async def getconfig(request: Request):
-    return json.dumps(load_config())
+    """Legacy endpoint returning the raw list for existing clients."""
+    return JSONResponse(list(load_config()))
+
+
+@app.get("/config")
+async def read_config():
+    """Return the current configuration as a JSON object."""
+    return load_config_dict()
+
+
+@app.post("/config")
+async def update_config(config: dict):
+    """Persist configuration updates coming from the UI."""
+    required_fields = ["database", "program", "outputQty", "filterSelect", "nonAnomaly", "speciesName"]
+    missing = [field for field in required_fields if not str(config.get(field, "")).strip()]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing config fields: {', '.join(missing)}")
+
+    save_config({
+        "database": config["database"],
+        "program": config["program"],
+        "output_qty": config["outputQty"],
+        "filter": config["filterSelect"],
+        "non_anomaly": config["nonAnomaly"],
+        "species_name": config["speciesName"],
+    })
+    return {"status": "ok", "config": load_config_dict()}
 
 @app.get("/download")
 async def download_endpoint(request: Request, type: int, folderid: str):

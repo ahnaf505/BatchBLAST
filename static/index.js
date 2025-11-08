@@ -26,11 +26,96 @@ const downloadFastaBtn = document.getElementById('downloadFasta');
 const downloadFullBtn = document.getElementById('downloadFull');
 const downloadAnomalyBtn = document.getElementById('downloadAnomaly');
 const downloadCSVBtn = document.getElementById('downloadCSV');
+const saveConfigBtn = document.getElementById('saveConfig');
+const configStatus = document.getElementById('configStatus');
+const configModalEl = document.getElementById('configModal');
+const nonAnomalyInlineInput = document.getElementById('nonAnomalyInline');
+const speciesNameInlineInput = document.getElementById('speciesNameInline');
+const heuristicStatus = document.getElementById('heuristicStatus');
+const heuristicStatusIcon = heuristicStatus?.querySelector('.status-icon');
+const heuristicStatusText = heuristicStatus?.querySelector('.status-text');
 
 let entries = [];
 let loadingStartTime = null;
 let timerInterval = null;
 let currentResults = [];
+let configCache = {
+    database: '',
+    program: '',
+    filterSelect: '',
+    outputQty: '',
+    nonAnomaly: '',
+    speciesName: ''
+};
+let configReady = false;
+
+function debounce(fn, delay = 600) {
+    let timeout;
+    return (...args) => {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => fn(...args), delay);
+    };
+}
+
+function setConfigStatus(message = "", type = "info") {
+    if (!configStatus) return;
+    configStatus.classList.remove('alert-info', 'alert-success', 'alert-danger');
+    if (!message) {
+        configStatus.classList.add('d-none');
+        configStatus.textContent = "";
+        return;
+    }
+    configStatus.classList.remove('d-none');
+    configStatus.classList.add(`alert-${type}`);
+    configStatus.textContent = message;
+}
+
+if (configModalEl) {
+    ['show.bs.modal', 'hidden.bs.modal'].forEach(evt => {
+        configModalEl.addEventListener(evt, () => setConfigStatus());
+    });
+}
+
+function showHeuristicStatus(state = 'hidden', message = '') {
+    if (!heuristicStatus) return;
+
+    heuristicStatus.classList.remove('hidden', 'text-success', 'text-danger', 'text-muted', 'text-primary');
+    if (state === 'hidden') {
+        heuristicStatus.classList.add('hidden');
+    } else if (state === 'success') {
+        heuristicStatus.classList.add('text-success');
+    } else if (state === 'error') {
+        heuristicStatus.classList.add('text-danger');
+    } else if (state === 'idle') {
+        heuristicStatus.classList.add('text-muted');
+    } else if (state === 'saving') {
+        heuristicStatus.classList.add('text-primary');
+    }
+
+    const iconClasses = {
+        saving: 'bi-arrow-repeat text-primary',
+        success: 'bi-check-circle-fill text-success',
+        error: 'bi-exclamation-triangle-fill text-danger',
+        idle: 'bi-dash-circle text-muted'
+    };
+
+    if (state === 'hidden') {
+        if (heuristicStatusIcon) {
+            heuristicStatusIcon.className = 'status-icon bi';
+        }
+        if (heuristicStatusText) {
+            heuristicStatusText.textContent = '';
+        }
+        return;
+    }
+
+    if (heuristicStatusIcon) {
+        heuristicStatusIcon.className = `status-icon bi ${iconClasses[state] || 'bi-check-circle-fill text-success'}`;
+    }
+    if (heuristicStatusText) {
+        heuristicStatusText.textContent = message;
+    }
+}
 
 // Initialize with one blank entry
 addEntry();
@@ -420,61 +505,193 @@ document.getElementById('submitAll').addEventListener('click', () => {
     ws.send(fastaData);
 });
 
-function setConfigValues(config) {
-  const {
-    database,
-    program,
-    filterSelect,
-    outputQty,
-    nonAnomaly,
-    speciesName
-  } = config;
-
-  if (database) document.getElementById('dbSelect').value = database;
-  if (program) document.getElementById('programSelect').value = program;
-  if (filterSelect) document.getElementById('filterSelect').value = filterSelect;
-  if (outputQty) document.getElementById('outputQty').value = outputQty;
-  if (nonAnomaly) document.getElementById('nonAnomalyKeyword').value = nonAnomaly;
-  if (speciesName) document.getElementById('speciesName').value = speciesName;
+function normalizeConfig(config = {}) {
+    return {
+        database: config.database ?? config.db ?? '',
+        program: config.program ?? config.programSelect ?? '',
+        filterSelect: config.filterSelect ?? config.filter ?? '',
+        outputQty: config.outputQty ?? config.output_qty ?? '',
+        nonAnomaly: config.nonAnomaly ?? config.non_anomaly ?? '',
+        speciesName: config.speciesName ?? config.species_name ?? ''
+    };
 }
 
-document.getElementById('saveConfig').addEventListener('click', () => {
-  const config = {
-    database: document.getElementById('dbSelect').value,
-    program: document.getElementById('programSelect').value,
-    outputQty: document.getElementById('outputQty').value,
-    filterSelect: document.getElementById('filterSelect').value,
-    nonAnomaly: document.getElementById('nonAnomalyKeyword').value,
-    speciesName: document.getElementById('speciesName').value
-  };
-  console.log('Saved Configuration:', config);
-  // Add your saving logic here (e.g. API call)
-  const modal = bootstrap.Modal.getInstance(document.getElementById('configModal'));
-  modal.hide();
-});
+function applyConfigToInputs(config) {
+    const dbSelect = document.getElementById('dbSelect');
+    const programSelect = document.getElementById('programSelect');
+    const filterSelect = document.getElementById('filterSelect');
+    const outputQty = document.getElementById('outputQty');
+
+    if (dbSelect && config.database !== undefined) dbSelect.value = config.database;
+    if (programSelect && config.program !== undefined) programSelect.value = config.program;
+    if (filterSelect && config.filterSelect !== undefined) filterSelect.value = config.filterSelect;
+    if (outputQty && config.outputQty !== undefined) outputQty.value = config.outputQty;
+
+    if (nonAnomalyInlineInput && document.activeElement !== nonAnomalyInlineInput) {
+        nonAnomalyInlineInput.value = config.nonAnomaly ?? '';
+    }
+    if (speciesNameInlineInput && document.activeElement !== speciesNameInlineInput) {
+        speciesNameInlineInput.value = config.speciesName ?? '';
+    }
+}
+
+function setConfigValues(config) {
+    const normalized = normalizeConfig(config);
+    configCache = { ...configCache, ...normalized };
+    applyConfigToInputs(normalized);
+    configReady = true;
+
+    if (normalized.nonAnomaly || normalized.speciesName) {
+        showHeuristicStatus('success', 'Synced');
+    } else {
+        showHeuristicStatus('idle', 'Add values to begin auto-save');
+    }
+}
+
+function collectFormSnapshot() {
+    return {
+        database: document.getElementById('dbSelect')?.value || '',
+        program: document.getElementById('programSelect')?.value || '',
+        filterSelect: document.getElementById('filterSelect')?.value || '',
+        outputQty: document.getElementById('outputQty')?.value || '',
+        nonAnomaly: nonAnomalyInlineInput?.value || '',
+        speciesName: speciesNameInlineInput?.value || ''
+    };
+}
+
+function buildPayload(overrides = {}) {
+    const snapshot = collectFormSnapshot();
+    return { ...snapshot, ...configCache, ...overrides };
+}
+
+async function persistConfig(overrides = {}) {
+    const payload = buildPayload(overrides);
+    const response = await fetch('/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+        let message = 'Failed to save configuration.';
+        try {
+            const error = await response.json();
+            message = error?.detail || message;
+        } catch (_) {
+            // ignore parse errors
+        }
+        throw new Error(message);
+    }
+
+    let data = {};
+    try {
+        data = await response.json();
+    } catch (_) {
+        data = {};
+    }
+
+    if (data?.config) {
+        setConfigValues(data.config);
+    } else {
+        setConfigValues(payload);
+    }
+
+    return data;
+}
+
+if (saveConfigBtn) {
+    saveConfigBtn.addEventListener('click', async () => {
+        const nonAnomalyValue = (nonAnomalyInlineInput?.value || '').trim();
+        const speciesValue = (speciesNameInlineInput?.value || '').trim();
+        const config = {
+            database: document.getElementById('dbSelect').value,
+            program: document.getElementById('programSelect').value,
+            outputQty: document.getElementById('outputQty').value,
+            filterSelect: document.getElementById('filterSelect').value,
+            nonAnomaly: nonAnomalyValue,
+            speciesName: speciesValue
+        };
+
+        const missing = Object.entries(config)
+            .filter(([, value]) => !String(value || "").trim())
+            .map(([key]) => key);
+
+        if (missing.length) {
+            setConfigStatus('Please fill out all configuration fields before saving.', 'danger');
+            return;
+        }
+
+        try {
+            setConfigStatus('Saving configuration…', 'info');
+            saveConfigBtn.disabled = true;
+
+            await persistConfig(config);
+
+            setConfigStatus('Configuration saved successfully.', 'success');
+            setTimeout(() => {
+                const modal = bootstrap.Modal.getInstance(configModalEl);
+                modal?.hide();
+            }, 600);
+        } catch (error) {
+            console.error('Config save error:', error);
+            setConfigStatus(error.message || 'Failed to save configuration.', 'danger');
+        } finally {
+            saveConfigBtn.disabled = false;
+        }
+    });
+}
 
 document.addEventListener('DOMContentLoaded', function() {
-    fetch('/getconfig')
+    showHeuristicStatus('saving', 'Loading configuration…');
+    fetch('/config')
         .then(response => {
             if (!response.ok) {
                 throw new Error('Network response was not ok');
             }
             return response.json();
         })
-        .then(data => {
-            const configJson = JSON.parse(data);
-            setConfigValues({
-              database: configJson[3],
-              program: configJson[2],
-              filterSelect: configJson[0],
-              outputQty: configJson[1],
-              nonAnomaly: configJson[4],
-              speciesName: configJson[5]
-            });
-
+        .then(config => {
+            setConfigValues(config);
         })
         .catch(error => {
             console.error('Config fetch error:', error);
+            showHeuristicStatus('error', 'Failed to load config');
         });
-
 });
+
+const debounceHeuristicSave = debounce(async () => {
+    if (!configReady) {
+        return;
+    }
+
+    const keyword = (nonAnomalyInlineInput?.value || '').trim();
+    const species = (speciesNameInlineInput?.value || '').trim();
+
+    if (!keyword || !species) {
+        showHeuristicStatus('idle', 'Fill both fields to auto-save');
+        return;
+    }
+
+    try {
+        showHeuristicStatus('saving', 'Saving…');
+        await persistConfig({ nonAnomaly: keyword, speciesName: species });
+        showHeuristicStatus('success', 'Saved');
+    } catch (error) {
+        console.error('Auto-save error:', error);
+        showHeuristicStatus('error', 'Save failed');
+    }
+}, 900);
+
+if (nonAnomalyInlineInput) {
+    nonAnomalyInlineInput.addEventListener('input', () => {
+        configCache.nonAnomaly = nonAnomalyInlineInput.value;
+        debounceHeuristicSave();
+    });
+}
+
+if (speciesNameInlineInput) {
+    speciesNameInlineInput.addEventListener('input', () => {
+        configCache.speciesName = speciesNameInlineInput.value;
+        debounceHeuristicSave();
+    });
+}
