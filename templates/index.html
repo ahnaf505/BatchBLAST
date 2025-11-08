@@ -14,6 +14,12 @@
       href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css"
     />
     <style>
+      :root {
+        --bb-primary: #2563eb;
+        --bb-primary-dark: #1d4ed8;
+        --bb-muted: #6c7a92;
+        --bb-surface: #ffffff;
+      }
       body {
         background: linear-gradient(135deg, #eff5ff, #f8f9ff);
         padding: 0.75rem 0;
@@ -71,6 +77,11 @@
         margin-bottom: 0.15rem;
         font-weight: 500;
       }
+      .form-control:focus,
+      .form-select:focus {
+        border-color: rgba(37, 99, 235, 0.4);
+        box-shadow: 0 0 0 0.15rem rgba(37, 99, 235, 0.15);
+      }
       .quick-config-card {
         border-radius: 0.75rem;
         border: 1px solid rgba(13, 110, 253, 0.1);
@@ -93,10 +104,35 @@
         opacity: 0;
         visibility: hidden;
       }
-      .btn-primary, .btn-success {
+      .btn {
         border-radius: 999px;
+        font-weight: 500;
+        letter-spacing: 0.01em;
+      }
+      .btn-primary, .btn-success {
         padding: 0.45rem 1.5rem;
-        box-shadow: 0 8px 16px rgba(13, 110, 253, 0.25);
+        box-shadow: 0 8px 16px rgba(13, 110, 253, 0.18);
+        border: none;
+      }
+      .btn-outline-primary,
+      .btn-outline-secondary {
+        border-width: 1.5px;
+        padding: 0.4rem 1.2rem;
+      }
+      .btn-outline-primary {
+        color: var(--bb-primary);
+        border-color: rgba(37, 99, 235, 0.5);
+      }
+      .btn-outline-primary:hover {
+        background: rgba(37, 99, 235, 0.08);
+      }
+      .btn-outline-secondary {
+        color: #475569;
+        border-color: rgba(71, 85, 105, 0.4);
+      }
+      .btn-outline-secondary:hover {
+        background: rgba(148, 163, 184, 0.15);
+        color: #1f2937;
       }
       .upload-area {
         border: 2px dashed #c7d7ff;
@@ -466,6 +502,37 @@
         background: #f8fafc;
         border-color: rgba(148, 163, 184, 0.2);
       }
+      .modal-content {
+        border-radius: 1.25rem;
+        border: none;
+        box-shadow: 0 25px 70px rgba(15, 23, 42, 0.15);
+      }
+      .modal-header {
+        border-bottom: none;
+        background: linear-gradient(120deg, rgba(37, 99, 235, 0.08), rgba(59, 130, 246, 0.15));
+        padding: 1.25rem 1.5rem 0.5rem;
+      }
+      .modal-footer {
+        border-top: none;
+        padding: 1.25rem 1.5rem;
+      }
+      .modal-title {
+        font-weight: 600;
+      }
+      .modal-subtitle {
+        font-size: 0.8rem;
+        color: #4c5678;
+        margin-bottom: 0;
+      }
+      .modal-eyebrow {
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.2em;
+        color: var(--bb-muted);
+      }
+      .modal-body {
+        padding: 1.25rem 1.5rem 0.5rem;
+      }
     </style>
   </head>
   <body>
@@ -475,7 +542,11 @@
         <div class="modal-content">
           
           <div class="modal-header">
-            <h5 class="modal-title" id="configModalLabel">Configuration</h5>
+            <div>
+              <div class="modal-eyebrow">Batch Settings</div>
+              <h5 class="modal-title mb-1" id="configModalLabel">Configuration</h5>
+              <p class="modal-subtitle">Adjust BLAST defaults for upcoming runs.</p>
+            </div>
             <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
           </div>
           
@@ -539,7 +610,7 @@
           </div>
           
           <div class="modal-footer">
-            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
             <button type="button" class="btn btn-primary" id="saveConfig">Save</button>
           </div>
         </div>
@@ -628,10 +699,10 @@
         <div class="entry-counter" id="entryCounter">0 sequences</div>
 
         <div class="btn-container">
-          <button class="btn btn-success btn-sm" id="addEntry">
+          <button class="btn btn-outline-success btn-sm" id="addEntry">
             ➕ Add Sequence
           </button>
-          <button class="btn btn-danger btn-sm" id="clearAll">
+          <button class="btn btn-outline-danger btn-sm" id="clearAll">
             🗑️ Clear All
           </button>
           <!-- Button to trigger modal -->

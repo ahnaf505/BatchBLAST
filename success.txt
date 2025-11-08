@@ -1,2 +1,3 @@
 2025-11-08T23:43:41+07:00 Milestone 1: Added blast_res ignore and resilient WebSocket reconnect UI.
 2025-11-08T23:48:27+07:00 Milestone 2: Added run history API and UI with preview/download actions.
+2025-11-08T23:51:23+07:00 Milestone 3: Polished global button + modal styling for consistent SPA look.
