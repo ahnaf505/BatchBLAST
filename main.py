@@ -8,6 +8,7 @@ from starlette.responses import FileResponse, StreamingResponse
 import uvicorn
 from io import BytesIO
 from pathlib import Path
+from datetime import datetime
 from blast import *
 from CONFIG import load_config, load_config_dict, save_config
 
@@ -34,6 +35,18 @@ def resolve_results_folder(folder_id: str) -> Path:
         raise HTTPException(status_code=400, detail="Invalid folder path")
 
     return resolved
+
+
+def serialize_run(folder_path: Path) -> dict:
+    stats = folder_path.stat()
+    return {
+        "id": folder_path.name,
+        "updated_at": datetime.fromtimestamp(stats.st_mtime).isoformat(),
+        "has_full_report": (folder_path / "BLAST_Full_Report.pdf").exists(),
+        "has_anomaly_report": (folder_path / "anomaly_output.pdf").exists(),
+        "has_fasta": (folder_path / "inputs.fasta").exists(),
+        "has_csv": any(folder_path.glob("*.csv")),
+    }
 
 @app.get("/", response_class=HTMLResponse)
 async def get_home(request: Request):
@@ -68,6 +81,36 @@ async def update_config(config: dict):
         "species_name": config["speciesName"],
     })
     return {"status": "ok", "config": load_config_dict()}
+
+
+@app.get("/history")
+async def list_history(limit: int = 25):
+    """Return the latest BatchBLAST runs for the history panel."""
+    if limit <= 0:
+        limit = 1
+
+    if not RESULTS_DIR.exists():
+        return []
+
+    folders = [
+        folder for folder in RESULTS_DIR.iterdir()
+        if folder.is_dir()
+    ]
+
+    sorted_folders = sorted(
+        folders,
+        key=lambda f: f.stat().st_mtime,
+        reverse=True
+    )
+
+    history = []
+    for folder in sorted_folders[:limit]:
+        try:
+            history.append(serialize_run(folder))
+        except FileNotFoundError:
+            # Folder may be removed between list/stat
+            continue
+    return history
 
 @app.get("/download")
 async def download_endpoint(request: Request, type: int, folderid: str):

@@ -422,6 +422,50 @@
         border-radius: 999px;
         padding: 0.35rem 0.9rem;
       }
+      .history-card {
+        border-radius: 1rem;
+        box-shadow: 0 8px 30px rgba(18, 38, 63, 0.07);
+      }
+      .history-table th {
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #6c7a92;
+        border-top: none;
+      }
+      .history-table td {
+        font-size: 0.82rem;
+        vertical-align: middle;
+      }
+      .history-actions {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 0.35rem;
+      }
+      .btn-chip {
+        border-radius: 999px;
+        font-size: 0.72rem;
+        padding: 0.2rem 0.65rem;
+      }
+      .history-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.3rem;
+      }
+      .history-badge {
+        font-size: 0.7rem;
+        border-radius: 999px;
+        padding: 0.15rem 0.55rem;
+        background: #f1f5ff;
+        color: #4158d0;
+        border: 1px solid rgba(65, 88, 208, 0.2);
+      }
+      .history-badge.muted {
+        color: #94a3b8;
+        background: #f8fafc;
+        border-color: rgba(148, 163, 184, 0.2);
+      }
     </style>
   </head>
   <body>
@@ -662,6 +706,38 @@
                   ></iframe>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+        <div class="card history-card mt-4 border-0">
+          <div class="card-body">
+            <div class="d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-3 mb-3">
+              <div>
+                <h5 class="mb-1 fw-semibold">Recent BatchBLAST Runs</h5>
+                <p class="text-muted small mb-0">Preview or download outputs from prior batches.</p>
+              </div>
+              <button class="btn btn-outline-primary btn-sm rounded-pill" id="refreshHistory">
+                <i class="bi bi-arrow-repeat me-1"></i>Refresh
+              </button>
+            </div>
+            <div class="table-responsive">
+              <table class="table table-sm align-middle history-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Run ID</th>
+                    <th scope="col">Updated</th>
+                    <th scope="col">Artifacts</th>
+                    <th scope="col" class="text-end">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="historyBody">
+                  <tr>
+                    <td colspan="4" class="text-muted text-center small py-3">
+                      History will appear here after you run BatchBLAST.
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </div>
         </div>

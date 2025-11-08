@@ -79,6 +79,8 @@ const downloadFastaBtn = document.getElementById('downloadFasta');
 const downloadFullBtn = document.getElementById('downloadFull');
 const downloadAnomalyBtn = document.getElementById('downloadAnomaly');
 const downloadCSVBtn = document.getElementById('downloadCSV');
+const historyBody = document.getElementById('historyBody');
+const refreshHistoryBtn = document.getElementById('refreshHistory');
 const saveConfigBtn = document.getElementById('saveConfig');
 const configStatus = document.getElementById('configStatus');
 const configModalEl = document.getElementById('configModal');
@@ -268,26 +270,42 @@ function changeLoadingText() {
 }
 
 // Download functions
-function downloadFasta() {
-    const fid = localStorage.getItem('blid');
+function downloadFasta(folderId) {
+    const fid = folderId || localStorage.getItem('blid');
+    if (!fid) {
+        alert("No run selected yet.");
+        return;
+    }
     const queryString = new URLSearchParams({type: 4, folderid: fid}).toString();
     window.location.href = `/download?${queryString}`;
 }
 
-function downloadAnomaly() {
-    const fid = localStorage.getItem('blid');
+function downloadAnomaly(folderId) {
+    const fid = folderId || localStorage.getItem('blid');
+    if (!fid) {
+        alert("No run selected yet.");
+        return;
+    }
     const queryString = new URLSearchParams({type: 3, folderid: fid}).toString();
     window.location.href = `/download?${queryString}`;
 }
 
-function downloadFull() {
-    const fid = localStorage.getItem('blid');
+function downloadFull(folderId) {
+    const fid = folderId || localStorage.getItem('blid');
+    if (!fid) {
+        alert("No run selected yet.");
+        return;
+    }
     const queryString = new URLSearchParams({type: 2, folderid: fid}).toString();
     window.location.href = `/download?${queryString}`;
 }
 
-function downloadCSV() {
-    const fid = localStorage.getItem('blid');
+function downloadCSV(folderId) {
+    const fid = folderId || localStorage.getItem('blid');
+    if (!fid) {
+        alert("No run selected yet.");
+        return;
+    }
     const queryString = new URLSearchParams({type: 1, folderid: fid}).toString();
     window.location.href = `/download?${queryString}`;
 }
@@ -424,6 +442,7 @@ const handleWebSocketMessage = (event) => {
                 let anomaly_pdf = `${url}/preview?${queryString2}`;
 
                 updatePDFs(full_pdf, anomaly_pdf);
+                loadHistory();
 
             }
             else if (data[0] && data[0].toLowerCase().includes("error")) {
@@ -479,6 +498,7 @@ const handleWebSocketMessage = (event) => {
                 hideLoading();
                 downloadSection.style.display = 'block';
                 downloadSection.scrollIntoView({ behavior: 'smooth' });
+                loadHistory();
             }
         } else {
             console.log("Received unexpected data format:", data);
@@ -501,6 +521,7 @@ const handleWebSocketMessage = (event) => {
             hideLoading();
             downloadSection.style.display = 'block';
             downloadSection.scrollIntoView({ behavior: 'smooth' });
+            loadHistory();
         } else if (message.toLowerCase().includes("error")) {
             icon.className = "bi bi-x-circle-fill";
             icon.style.color = "red";
@@ -701,6 +722,153 @@ if (saveConfigBtn) {
     });
 }
 
+function formatHistoryDate(timestamp) {
+    if (!timestamp) return '—';
+    try {
+        const date = new Date(timestamp);
+        if (Number.isNaN(date.getTime())) return timestamp;
+        return date.toLocaleString();
+    } catch (error) {
+        return timestamp;
+    }
+}
+
+function renderHistory(entries) {
+    if (!historyBody) return;
+    if (!entries.length) {
+        historyBody.innerHTML = `
+            <tr>
+                <td colspan="4" class="text-center text-muted small py-3">
+                    No completed BatchBLAST runs yet.
+                </td>
+            </tr>
+        `;
+        return;
+    }
+
+    const rows = entries.map(entry => {
+        const previewDisabled = entry.has_full_report || entry.has_anomaly_report ? '' : 'disabled';
+        return `
+            <tr>
+                <td class="fw-semibold text-break">${entry.id}</td>
+                <td>${formatHistoryDate(entry.updated_at)}</td>
+                <td>
+                    <div class="history-badges">
+                        <span class="history-badge ${entry.has_full_report ? '' : 'muted'}">Full PDF</span>
+                        <span class="history-badge ${entry.has_anomaly_report ? '' : 'muted'}">Anomaly PDF</span>
+                        <span class="history-badge ${entry.has_csv ? '' : 'muted'}">CSV</span>
+                        <span class="history-badge ${entry.has_fasta ? '' : 'muted'}">FASTA</span>
+                    </div>
+                </td>
+                <td>
+                    <div class="history-actions">
+                        <button class="btn btn-outline-primary btn-chip" data-action="preview" data-id="${entry.id}" ${previewDisabled}>
+                            Preview
+                        </button>
+                        <button class="btn btn-outline-secondary btn-chip" data-action="download" data-type="full" data-id="${entry.id}" ${entry.has_full_report ? '' : 'disabled'}>
+                            Full
+                        </button>
+                        <button class="btn btn-outline-secondary btn-chip" data-action="download" data-type="anomaly" data-id="${entry.id}" ${entry.has_anomaly_report ? '' : 'disabled'}>
+                            Anomaly
+                        </button>
+                        <button class="btn btn-outline-secondary btn-chip" data-action="download" data-type="csv" data-id="${entry.id}" ${entry.has_csv ? '' : 'disabled'}>
+                            CSV
+                        </button>
+                        <button class="btn btn-outline-secondary btn-chip" data-action="download" data-type="fasta" data-id="${entry.id}" ${entry.has_fasta ? '' : 'disabled'}>
+                            FASTA
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        `;
+    }).join("");
+
+    historyBody.innerHTML = rows;
+}
+
+async function loadHistory(showSpinner = false) {
+    if (!historyBody) return;
+
+    if (showSpinner) {
+        historyBody.innerHTML = `
+            <tr>
+                <td colspan="4" class="text-center text-muted small py-3">
+                    Loading history…
+                </td>
+            </tr>
+        `;
+    }
+
+    try {
+        const response = await fetch('/history');
+        if (!response.ok) {
+            throw new Error('Unable to fetch history');
+        }
+        const data = await response.json();
+        renderHistory(Array.isArray(data) ? data : []);
+    } catch (error) {
+        console.error('History fetch error:', error);
+        historyBody.innerHTML = `
+            <tr>
+                <td colspan="4" class="text-center text-danger small py-3">
+                    Unable to load history.
+                </td>
+            </tr>
+        `;
+    }
+}
+
+function previewHistoryRun(folderId) {
+    if (!folderId) return;
+    const url = window.location.origin;
+
+    const fullQuery = new URLSearchParams({type: 2, folderid: folderId}).toString();
+    const anomalyQuery = new URLSearchParams({type: 3, folderid: folderId}).toString();
+
+    updatePDFs(`${url}/preview?${fullQuery}`, `${url}/preview?${anomalyQuery}`);
+    downloadSection.style.display = 'block';
+    localStorage.setItem('blid', folderId);
+    downloadSection.scrollIntoView({ behavior: 'smooth' });
+}
+
+if (historyBody) {
+    historyBody.addEventListener('click', (event) => {
+        const button = event.target.closest('button[data-action]');
+        if (!button) return;
+        const runId = button.getAttribute('data-id');
+        const action = button.getAttribute('data-action');
+
+        if (action === 'preview') {
+            previewHistoryRun(runId);
+            return;
+        }
+
+        if (action === 'download') {
+            const type = button.getAttribute('data-type');
+            switch (type) {
+                case 'full':
+                    downloadFull(runId);
+                    break;
+                case 'anomaly':
+                    downloadAnomaly(runId);
+                    break;
+                case 'csv':
+                    downloadCSV(runId);
+                    break;
+                case 'fasta':
+                    downloadFasta(runId);
+                    break;
+                default:
+                    break;
+            }
+        }
+    });
+}
+
+if (refreshHistoryBtn) {
+    refreshHistoryBtn.addEventListener('click', () => loadHistory(true));
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     showHeuristicStatus('saving', 'Loading configuration…');
     fetch('/config')
@@ -717,6 +885,7 @@ document.addEventListener('DOMContentLoaded', function() {
             console.error('Config fetch error:', error);
             showHeuristicStatus('error', 'Failed to load config');
         });
+    loadHistory(true);
 });
 
 const debounceHeuristicSave = debounce(async () => {
