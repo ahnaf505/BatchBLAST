@@ -98,3 +98,4 @@ cython_debug/
 .secret/
 secrets.json
 config.local.json
+AGENTS.md
