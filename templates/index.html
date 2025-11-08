@@ -272,6 +272,45 @@
         font-size: 0.78rem;
         border-radius: 999px;
       }
+      .connection-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        padding: 0.35rem 0.95rem;
+        border-radius: 999px;
+        font-size: 0.78rem;
+        letter-spacing: 0.02em;
+        background: #eef2ff;
+        color: #4b5bbf;
+        border: 1px solid rgba(91, 113, 236, 0.3);
+        transition: all 0.2s ease;
+      }
+      .connection-chip .chip-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: currentColor;
+        display: inline-block;
+      }
+      .connection-chip.connected {
+        background: #e6fff4;
+        color: #0f9d58;
+        border-color: rgba(15, 157, 88, 0.2);
+      }
+      .connection-chip.reconnecting {
+        background: #fff7e6;
+        color: #c77700;
+        border-color: rgba(255, 193, 7, 0.3);
+      }
+      .connection-chip.error {
+        background: #ffeaea;
+        color: #c0392b;
+        border-color: rgba(192, 57, 43, 0.3);
+      }
+      .connection-chip.connecting {
+        background: #eef2ff;
+        color: #4b5bbf;
+      }
       .preview-title {
         margin-top: 1.2rem;
         padding-bottom: 0.2rem;
@@ -487,7 +526,13 @@
       <div class="container mt-2 mb-3">
         <div class="main-panel card shadow-sm">
           <div class="card-body">
-        <h1 class="text-center mb-4">BatchBLAST Web UI</h1>
+        <div class="d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-3 mb-4">
+          <h1 class="mb-0">BatchBLAST Web UI</h1>
+          <div id="wsStatus" class="connection-chip connecting">
+            <span class="chip-dot"></span>
+            <span class="chip-text">Connecting…</span>
+          </div>
+        </div>
 
         <div class="quick-config-card card mb-4 border-0">
           <div class="card-body">

@@ -98,4 +98,5 @@ cython_debug/
 .secret/
 secrets.json
 config.local.json
+blast_res/
 AGENTS.md

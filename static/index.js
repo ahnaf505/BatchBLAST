@@ -1,9 +1,62 @@
 const host = window.location.host;
+const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
 let ws;
-ws = new WebSocket(`ws://${host}`);
-ws.onclose = () => {
-    ws = new WebSocket(`ws://${host}`);
-};
+let reconnectAttempts = 0;
+let reconnectTimer;
+const wsStatusChip = document.getElementById('wsStatus');
+
+function updateConnectionStatus(state = 'connecting', message) {
+    if (!wsStatusChip) return;
+    const textMap = {
+        connecting: 'Connecting…',
+        connected: 'Connected',
+        reconnecting: 'Reconnecting…',
+        error: 'Connection lost',
+    };
+    const chipText = wsStatusChip.querySelector('.chip-text');
+    const display = message || textMap[state] || textMap.connecting;
+    wsStatusChip.classList.remove('connecting', 'connected', 'reconnecting', 'error');
+    wsStatusChip.classList.add(state);
+    if (chipText) {
+        chipText.textContent = display;
+    } else {
+        wsStatusChip.textContent = display;
+    }
+}
+
+function scheduleReconnect() {
+    const delay = Math.min(15000, 1000 * Math.pow(2, reconnectAttempts));
+    reconnectAttempts += 1;
+    const seconds = Math.round(delay / 1000);
+    updateConnectionStatus('reconnecting', `Reconnecting in ${seconds}s…`);
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(() => {
+        initWebSocket();
+    }, delay);
+}
+
+function initWebSocket() {
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        return;
+    }
+    updateConnectionStatus(reconnectAttempts ? 'reconnecting' : 'connecting');
+    ws = new WebSocket(`${protocol}://${host}`);
+    ws.addEventListener('open', () => {
+        reconnectAttempts = 0;
+        updateConnectionStatus('connected');
+    });
+    ws.addEventListener('error', (event) => {
+        console.error('WebSocket error:', event);
+        updateConnectionStatus('error', 'Connection error');
+        if (ws && ws.readyState !== WebSocket.CLOSED) {
+            ws.close();
+        }
+    });
+    ws.addEventListener('close', () => {
+        scheduleReconnect();
+    });
+    ws.addEventListener('message', handleWebSocketMessage);
+}
 
 const entriesDiv = document.getElementById('entries');
 const previewDiv = document.getElementById('preview');
@@ -340,7 +393,7 @@ const icon = document.getElementById("loadingIcon");
 let finished = 0;
 const result = [];
 
-ws.onmessage = (event) => {
+const handleWebSocketMessage = (event) => {
     try {
         const data = JSON.parse(event.data);
         if (data[0] == "folderid") {
@@ -468,6 +521,8 @@ ws.onmessage = (event) => {
     }
 };
 
+initWebSocket();
+
 document.getElementById('submitAll').addEventListener('click', () => {
     let allTitlesFilled = true;
 
@@ -500,6 +555,11 @@ document.getElementById('submitAll').addEventListener('click', () => {
     showLoading();
     loadingTitle.textContent = "Submitting DNA Sequences";
     loadingDescription.textContent = "Performing BLAST analysis and report generation...";
+
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        alert("Connection is unavailable. Reconnecting… please try again in a moment.");
+        return;
+    }
 
     // Send FASTA data over WebSocket
     ws.send(fastaData);
