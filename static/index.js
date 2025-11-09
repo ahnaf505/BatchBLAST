@@ -1,9 +1,258 @@
 const host = window.location.host;
-let ws;
-ws = new WebSocket(`ws://${host}`);
-ws.onclose = () => {
-    ws = new WebSocket(`ws://${host}`);
+const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+const wsUrl = `${wsProtocol}://${host}`;
+const WS_RECONNECT_DELAY = 2000;
+let ws = null;
+let reconnectTimer = null;
+let connectTimeout = null;
+const STORAGE_KEYS = {
+    jobId: 'blastJobId',
+    jobStatus: 'blastJobStatus',
+    jobStart: 'blastJobStart',
+    folderId: 'blid',
+    preview: 'blastJobPreview'
 };
+
+let activeJobId = localStorage.getItem(STORAGE_KEYS.jobId) || null;
+
+const wsStatus = document.getElementById('wsStatus');
+const wsStatusIcon = document.getElementById('wsStatusIcon');
+const wsStatusText = document.getElementById('wsStatusText');
+
+const wsStateConfig = {
+    connecting: {
+        icon: 'bi-arrow-repeat',
+        color: '#ffc107',
+        text: 'Connecting…'
+    },
+    connected: {
+        icon: 'bi-circle-fill',
+        color: '#28a745',
+        text: 'Connected'
+    },
+    disconnected: {
+        icon: 'bi-wifi-off',
+        color: '#fd7e14',
+        text: 'Reconnecting…'
+    },
+    error: {
+        icon: 'bi-exclamation-triangle-fill',
+        color: '#dc3545',
+        text: 'Error'
+    }
+};
+
+function setJobStatus(status) {
+    if (status) {
+        localStorage.setItem(STORAGE_KEYS.jobStatus, status);
+    } else {
+        localStorage.removeItem(STORAGE_KEYS.jobStatus);
+    }
+}
+
+function setJobStartTimestamp(value) {
+    if (value) {
+        localStorage.setItem(STORAGE_KEYS.jobStart, String(value));
+    } else {
+        localStorage.removeItem(STORAGE_KEYS.jobStart);
+    }
+}
+
+function shouldAttemptResume() {
+    return (
+        !!localStorage.getItem(STORAGE_KEYS.jobId) &&
+        localStorage.getItem(STORAGE_KEYS.jobStatus) === 'running'
+    );
+}
+
+function getStoredStartTime() {
+    const ts = localStorage.getItem(STORAGE_KEYS.jobStart);
+    return ts ? Number(ts) : null;
+}
+
+function persistFolderId(folderId) {
+    if (folderId) {
+        localStorage.setItem(STORAGE_KEYS.folderId, folderId);
+    }
+}
+
+function persistPreview(entries) {
+    if (!entries || !entries.length) {
+        localStorage.removeItem(STORAGE_KEYS.preview);
+        return;
+    }
+
+    try {
+        localStorage.setItem(STORAGE_KEYS.preview, JSON.stringify(entries));
+    } catch (storageError) {
+        console.warn('Failed to persist preview', storageError);
+    }
+}
+
+function restorePreviewFromStorage() {
+    const cached = localStorage.getItem(STORAGE_KEYS.preview);
+    if (!cached) {
+        return [];
+    }
+    try {
+        return JSON.parse(cached);
+    } catch (parseError) {
+        console.warn('Failed to parse cached preview', parseError);
+        return [];
+    }
+}
+
+function clearJobTracking(preserveFolder = true) {
+    activeJobId = null;
+    localStorage.removeItem(STORAGE_KEYS.jobId);
+    setJobStatus(null);
+    setJobStartTimestamp(null);
+    if (!preserveFolder) {
+        localStorage.removeItem(STORAGE_KEYS.folderId);
+    }
+}
+
+function updateWsStatus(state) {
+    if (!wsStatus || !wsStatusIcon || !wsStatusText) return;
+    const config = wsStateConfig[state] || wsStateConfig.disconnected;
+    wsStatus.dataset.state = state;
+    wsStatus.setAttribute('aria-label', `WebSocket status: ${config.text}`);
+    wsStatusIcon.className = `bi ${config.icon} ws-status-icon`;
+    wsStatusIcon.style.color = config.color;
+    wsStatusIcon.classList.toggle('ws-status-spin', state === 'connecting');
+    wsStatusText.textContent = config.text;
+}
+
+function clearConnectTimeout() {
+    if (connectTimeout) {
+        clearTimeout(connectTimeout);
+        connectTimeout = null;
+    }
+}
+
+function startConnectTimeout() {
+    clearConnectTimeout();
+    connectTimeout = setTimeout(() => {
+        if (ws && ws.readyState === WebSocket.CONNECTING) {
+            console.warn('WebSocket connect timeout; retrying.');
+            try {
+                ws.close(4000, 'Connection timeout');
+            } catch (timeoutError) {
+                console.error('Error closing timed-out WebSocket:', timeoutError);
+            }
+        }
+    }, WS_RECONNECT_DELAY);
+}
+
+function teardownSocket(socket, code = 1000, reason = 'Reconnecting') {
+    if (!socket) return;
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onclose = null;
+    socket.onerror = null;
+    if (socket.readyState !== WebSocket.CLOSED) {
+        try {
+            socket.close(code, reason);
+        } catch (closeError) {
+            console.error('Error closing WebSocket:', closeError);
+        }
+    }
+}
+
+function scheduleReconnect() {
+    if (reconnectTimer) return;
+    reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connectWebSocket(true);
+    }, WS_RECONNECT_DELAY);
+}
+
+function connectWebSocket(force = false) {
+    if (ws) {
+        const readyState = ws.readyState;
+        if (!force && (readyState === WebSocket.OPEN || readyState === WebSocket.CONNECTING)) {
+            return;
+        }
+
+        if (force) {
+            const staleSocket = ws;
+            ws = null;
+            clearConnectTimeout();
+            teardownSocket(staleSocket);
+        }
+    }
+
+    updateWsStatus('connecting');
+
+    let nextSocket;
+    try {
+        nextSocket = new WebSocket(wsUrl);
+    } catch (error) {
+        console.error('WebSocket initialization failed:', error);
+        updateWsStatus('error');
+        scheduleReconnect();
+        return;
+    }
+
+    ws = nextSocket;
+    startConnectTimeout();
+
+    nextSocket.onopen = () => {
+        clearConnectTimeout();
+        ws = nextSocket;  // ensure active reference
+        updateWsStatus('connected');
+        if (reconnectTimer) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+        }
+
+        if (shouldAttemptResume()) {
+            const resumeJobId = localStorage.getItem(STORAGE_KEYS.jobId);
+            const storedStart = getStoredStartTime();
+            if (resumeJobId) {
+                if (!loadingOverlay.classList.contains('active')) {
+                    showLoading(storedStart);
+                } else if (storedStart) {
+                    loadingStartTime = new Date(storedStart);
+                    updateTimer();
+                }
+                const resumePayload = {
+                    action: 'resume',
+                    jobId: resumeJobId
+                };
+                try {
+                    nextSocket.send(JSON.stringify(resumePayload));
+                } catch (resumeError) {
+                    console.error('Failed to request resume', resumeError);
+                }
+            }
+        }
+    };
+
+    nextSocket.onmessage = handleWebSocketMessage;
+
+    nextSocket.onclose = () => {
+        if (ws === nextSocket) {
+            ws = null;
+        }
+        clearConnectTimeout();
+        updateWsStatus('disconnected');
+        scheduleReconnect();
+    };
+
+    nextSocket.onerror = (event) => {
+        console.error('WebSocket error:', event);
+        if (ws === nextSocket) {
+            updateWsStatus('error');
+        }
+        clearConnectTimeout();
+        try {
+            nextSocket.close();
+        } catch (closeError) {
+            console.error('Error closing WebSocket after failure:', closeError);
+        }
+    };
+}
 
 const entriesDiv = document.getElementById('entries');
 const previewDiv = document.getElementById('preview');
@@ -32,10 +281,11 @@ let configAlertTimeout = null;
 let entries = [];
 let loadingStartTime = null;
 let timerInterval = null;
-let currentResults = [];
+let currentResults = restorePreviewFromStorage();
 
 // Initialize with one blank entry
 addEntry();
+updatePreviewUI(currentResults);
 
 function updateCounter() {
     entryCounter.textContent = `${entries.length} sequence${entries.length !== 1 ? 's' : ''}`;
@@ -87,19 +337,23 @@ function renderEntries() {
 }
 
 // Loading overlay functions
-function showLoading() {
+function showLoading(startTimeOverride = null) {
     loadingOverlay.classList.add('active');
     contentWrapper.classList.add('loading-blur');
     
     // Start timer
-    loadingStartTime = new Date();
+    loadingStartTime = startTimeOverride ? new Date(startTimeOverride) : new Date();
     updateTimer();
+    if (timerInterval) {
+        clearInterval(timerInterval);
+    }
     timerInterval = setInterval(updateTimer, 1000);
 }
 
 function hideLoading() {
     loadingOverlay.classList.remove('active');
     contentWrapper.classList.remove('loading-blur');
+    loadingStartTime = null;
     
     // Clear timer
     if (timerInterval) {
@@ -133,25 +387,25 @@ function changeLoadingText() {
 
 // Download functions
 function downloadFasta() {
-    const fid = localStorage.getItem('blid');
+    const fid = localStorage.getItem(STORAGE_KEYS.folderId);
     const queryString = new URLSearchParams({type: 4, folderid: fid}).toString();
     window.location.href = `/download?${queryString}`;
 }
 
 function downloadAnomaly() {
-    const fid = localStorage.getItem('blid');
+    const fid = localStorage.getItem(STORAGE_KEYS.folderId);
     const queryString = new URLSearchParams({type: 3, folderid: fid}).toString();
     window.location.href = `/download?${queryString}`;
 }
 
 function downloadFull() {
-    const fid = localStorage.getItem('blid');
+    const fid = localStorage.getItem(STORAGE_KEYS.folderId);
     const queryString = new URLSearchParams({type: 2, folderid: fid}).toString();
     window.location.href = `/download?${queryString}`;
 }
 
 function downloadCSV() {
-    const fid = localStorage.getItem('blid');
+    const fid = localStorage.getItem(STORAGE_KEYS.folderId);
     const queryString = new URLSearchParams({type: 1, folderid: fid}).toString();
     window.location.href = `/download?${queryString}`;
 }
@@ -254,172 +508,271 @@ function updatePDFs(url1, url2) {
 }
 
 const icon = document.getElementById("loadingIcon");
-let finished = 0;
-const result = [];
 
-ws.onmessage = (event) => {
-    try {
-        const data = JSON.parse(event.data);
-        if (data[0] == "folderid") {
-            localStorage.setItem("blid", data[1]);
-            localStorage.setItem("blid_red", data[1]);
+function resetLoadingIcon() {
+    icon.className = "bi bi-arrow-repeat spinner";
+    icon.style.color = "#0d6efd";
+}
+
+function ensureLoadingActive(startOverride = null) {
+    const storedStart = startOverride ?? getStoredStartTime();
+    if (!loadingOverlay.classList.contains('active')) {
+        showLoading(storedStart);
+    } else if (storedStart) {
+        loadingStartTime = new Date(storedStart);
+    }
+}
+
+function applyStatusPayload(payload) {
+    if (!payload) return;
+
+    if (Array.isArray(payload)) {
+        const [title, ...rest] = payload;
+        if (title) {
+            loadingTitle.textContent = title;
         }
-        
-        if (Array.isArray(data)) {
-            if (data[0] && data[0].toLowerCase().includes("complete")) {
-                // Update preview with results
-                previewDiv.innerHTML = currentResults.map(
-                    (e, i) => `
-                    <div class="preview-item">
-                        <strong>${i + 1}. ${e.title}</strong><br>
-                        <code>${e.sequence}</code>
-                    </div>
-                `).join("");
-
-                hideLoading();
-                downloadSection.style.display = 'block';
-                downloadSection.scrollIntoView({ behavior: 'smooth' });
-
-                let url = window.location.origin;
-                const fid = localStorage.getItem('blid');
-                const queryString = new URLSearchParams({type: 2, folderid: fid}).toString();
-                let full_pdf = `${url}/preview?${queryString}`;
-                const queryString2 = new URLSearchParams({type: 3, folderid: fid}).toString();
-                let anomaly_pdf = `${url}/preview?${queryString2}`;
-
-                updatePDFs(full_pdf, anomaly_pdf);
-
-            }
-            else if (data[0] && data[0].toLowerCase().includes("error")) {
-                icon.className = "bi bi-x-circle-fill";
-                icon.style.color = "red";
-                loadingTitle.textContent = data[0];
-                // Combine all error messages into the description
-                loadingDescription.textContent = data.slice(1).filter(msg => msg).join(" | ") || 'An error occurred during processing';
-            }
-            else {
-                // Handle multi-line progress updates
-                if (data.length > 0) {
-                    // Use first item as main title
-                    loadingTitle.textContent = data[0] || 'Processing DNA Sequences';
-                    
-                    // Combine remaining items into description with line breaks
-                    if (data.length > 1) {
-                        const descriptionLines = data.slice(1).filter(line => line && line.trim() !== '');
-                        loadingDescription.innerHTML = descriptionLines.map(line => 
-                            `<div>${line}</div>`
-                        ).join('');
-                    } else {
-                        loadingDescription.textContent = 'Processing... Please wait.';
-                    }
-                }
-            }
-        } else if (typeof data === 'object' && data !== null) {
-            // Handle object format with specific fields
-            if (data.status) {
-                loadingTitle.textContent = data.status;
-            }
-            if (data.message) {
-                loadingDescription.textContent = data.message;
-            }
-            if (data.messages && Array.isArray(data.messages)) {
-                loadingDescription.innerHTML = data.messages.map(line => 
-                    `<div>${line}</div>`
-                ).join('');
-            }
-            if (data.progress) {
-                loadingDescription.innerHTML += `<div><strong>Progress:</strong> ${data.progress}</div>`;
-            }
-            
-            if (data.complete) {
-                previewDiv.innerHTML = currentResults.map(
-                    (e, i) => `
-                    <div class="preview-item">
-                        <strong>${i + 1}. ${e.title}</strong><br>
-                        <code>${e.sequence}</code>
-                    </div>
-                `).join("");
-
-                hideLoading();
-                downloadSection.style.display = 'block';
-                downloadSection.scrollIntoView({ behavior: 'smooth' });
-            }
-        } else {
-            console.log("Received unexpected data format:", data);
+        if (rest.length) {
+            loadingDescription.innerHTML = rest
+                .filter(Boolean)
+                .map(line => `<div>${line}</div>`)
+                .join('');
         }
-    } catch (error) {
-        console.error("Error parsing WebSocket message:", error, "Raw data:", event.data);
-        
-        // If it's not JSON, treat it as plain text
-        const message = event.data.toString();
-        
-        if (message.toLowerCase().includes("complete")) {
-            previewDiv.innerHTML = currentResults.map(
-                (e, i) => `
-                <div class="preview-item">
-                    <strong>${i + 1}. ${e.title}</strong><br>
-                    <code>${e.sequence}</code>
-                </div>
-            `).join("");
+        return;
+    }
 
-            hideLoading();
-            downloadSection.style.display = 'block';
-            downloadSection.scrollIntoView({ behavior: 'smooth' });
-        } else if (message.toLowerCase().includes("error")) {
-            icon.className = "bi bi-x-circle-fill";
-            icon.style.color = "red";
-            loadingTitle.textContent = "Error";
-            loadingDescription.textContent = message;
-        } else {
-            // Handle multi-line plain text
-            const lines = message.split('\n').filter(line => line.trim() !== '');
-            if (lines.length > 0) {
-                loadingTitle.textContent = lines[0];
-                if (lines.length > 1) {
-                    loadingDescription.innerHTML = lines.slice(1).map(line => 
-                        `<div>${line}</div>`
-                    ).join('');
-                }
-            }
+    if (typeof payload === 'string') {
+        loadingTitle.textContent = payload;
+        loadingDescription.textContent = '';
+        return;
+    }
+
+    if (typeof payload === 'object') {
+        if (payload.title) {
+            loadingTitle.textContent = payload.title;
+        }
+        if (payload.message) {
+            loadingDescription.textContent = payload.message;
+        }
+        if (Array.isArray(payload.lines)) {
+            loadingDescription.innerHTML = payload.lines
+                .filter(Boolean)
+                .map(line => `<div>${line}</div>`)
+                .join('');
+        }
+        if (Array.isArray(payload.messages)) {
+            loadingDescription.innerHTML = payload.messages
+                .filter(Boolean)
+                .map(line => `<div>${line}</div>`)
+                .join('');
         }
     }
-};
+}
+
+function updatePreviewUI(entries = currentResults) {
+    if (!entries || !entries.length) {
+        previewDiv.innerHTML = '<p class="text-muted">No sequences queued.</p>';
+        return;
+    }
+
+    previewDiv.innerHTML = entries
+        .map((e, i) => `
+            <div class="preview-item">
+                <strong>${i + 1}. ${e.title}</strong><br>
+                <code>${e.sequence}</code>
+            </div>
+        `)
+        .join("");
+}
+
+function showDownloadSectionForFolder(folderId, scrollIntoView = false) {
+    if (!folderId) return;
+    downloadSection.style.display = 'block';
+
+    const baseUrl = window.location.origin;
+    const fullQuery = new URLSearchParams({ type: 2, folderid: folderId }).toString();
+    const anomalyQuery = new URLSearchParams({ type: 3, folderid: folderId }).toString();
+
+    updatePDFs(`${baseUrl}/preview?${fullQuery}`, `${baseUrl}/preview?${anomalyQuery}`);
+    if (scrollIntoView) {
+        downloadSection.scrollIntoView({ behavior: 'smooth' });
+    }
+}
+
+function handleJobCompletion(payload) {
+    setJobStatus('completed');
+    setJobStartTimestamp(null);
+    localStorage.removeItem(STORAGE_KEYS.jobId);
+    resetLoadingIcon();
+    hideLoading();
+
+    applyStatusPayload(payload);
+
+    if (!currentResults.length) {
+        currentResults = restorePreviewFromStorage();
+    }
+    updatePreviewUI(currentResults);
+    showDownloadSectionForFolder(localStorage.getItem(STORAGE_KEYS.folderId), true);
+}
+
+function handleJobError(payload) {
+    setJobStatus('error');
+    clearJobTracking(false);
+    ensureLoadingActive();
+    icon.className = "bi bi-x-circle-fill";
+    icon.style.color = "red";
+    loadingTitle.textContent = 'Error';
+    loadingDescription.textContent = 'An error occurred during processing';
+    applyStatusPayload(payload);
+    persistPreview([]);
+    currentResults = [];
+    downloadSection.style.display = 'none';
+    updatePreviewUI([]);
+}
+
+function restoreUIFromStorage() {
+    if (currentResults.length) {
+        updatePreviewUI(currentResults);
+    }
+
+    const status = localStorage.getItem(STORAGE_KEYS.jobStatus);
+    const storedJobId = localStorage.getItem(STORAGE_KEYS.jobId);
+
+    if (status === 'completed') {
+        showDownloadSectionForFolder(localStorage.getItem(STORAGE_KEYS.folderId));
+    } else if (status === 'running' && storedJobId) {
+        const storedStart = getStoredStartTime();
+        showLoading(storedStart);
+        loadingTitle.textContent = "Reconnecting to BLAST job";
+        loadingDescription.textContent = "Re-establishing connection to restore progress updates...";
+    }
+}
+
+function handleWebSocketMessage(event) {
+    let data;
+    try {
+        data = JSON.parse(event.data);
+    } catch (parseError) {
+        console.error("Error parsing WebSocket message:", parseError, "Raw data:", event.data);
+        return;
+    }
+
+    if (Array.isArray(data)) {
+        ensureLoadingActive();
+        applyStatusPayload(data);
+        return;
+    }
+
+    if (!data || typeof data !== 'object') {
+        console.warn("Received unexpected data format:", data);
+        return;
+    }
+
+    const { type, jobId, payload } = data;
+
+    if (jobId) {
+        activeJobId = jobId;
+        localStorage.setItem(STORAGE_KEYS.jobId, jobId);
+    }
+
+    switch (type) {
+        case 'job_ack': {
+            const now = Date.now();
+            setJobStatus('running');
+            setJobStartTimestamp(now);
+            ensureLoadingActive(now);
+            resetLoadingIcon();
+            break;
+        }
+        case 'resume_ack': {
+            setJobStatus('running');
+            ensureLoadingActive();
+            resetLoadingIcon();
+            break;
+        }
+        case 'job_started':
+        case 'progress': {
+            setJobStatus('running');
+            ensureLoadingActive();
+            resetLoadingIcon();
+            applyStatusPayload(payload);
+            break;
+        }
+        case 'folder': {
+            if (payload && payload.folderId) {
+                persistFolderId(payload.folderId);
+            }
+            break;
+        }
+        case 'complete': {
+            handleJobCompletion(payload);
+            break;
+        }
+        case 'error': {
+            handleJobError(payload);
+            break;
+        }
+        default: {
+            console.warn('Unhandled WebSocket event', data);
+            break;
+        }
+    }
+}
+
+connectWebSocket();
 
 document.getElementById('submitAll').addEventListener('click', () => {
     let allTitlesFilled = true;
+    const submissionResults = [];
 
     entries.forEach((_, i) => {
         const title = document.getElementById(`title_${i}`)?.value.trim();
         const seq = document.getElementById(`seq_${i}`)?.value.trim().toUpperCase();
 
-        // Ensure title is not empty
         if (!title) {
             alert(`Title for sequence ${i + 1} cannot be empty.`);
             allTitlesFilled = false;
             return;
         }
 
-        if (seq) result.push({ title, sequence: seq });
+        if (seq) {
+            submissionResults.push({ title, sequence: seq });
+        }
     });
 
-    if (!allTitlesFilled || result.length === 0) {
+    if (!allTitlesFilled || submissionResults.length === 0) {
         alert("Please fix the errors before submitting.");
         return;
     }
 
-    // Convert to FASTA format
-    const fastaData = result.map(e => `>${e.title}\n${e.sequence}`).join("\n");
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        alert("Reconnecting to the server. Please try again in a moment.");
+        connectWebSocket(true);
+        return;
+    }
 
-    // Store results for download
-    currentResults = result;
-
-    // Show loading during "processing"
+    const fastaData = submissionResults.map(e => `>${e.title}\n${e.sequence}`).join("\n");
+    currentResults = submissionResults.map(entry => ({ ...entry }));
+    persistPreview(currentResults);
+    updatePreviewUI(currentResults);
+    clearJobTracking(true);
+    downloadSection.style.display = 'none';
+    resetLoadingIcon();
     showLoading();
     loadingTitle.textContent = "Submitting DNA Sequences";
     loadingDescription.textContent = "Performing BLAST analysis and report generation...";
 
-    // Send FASTA data over WebSocket
-    ws.send(fastaData);
+    const startPayload = {
+        action: 'start',
+        fasta: fastaData
+    };
+
+    try {
+        ws.send(JSON.stringify(startPayload));
+    } catch (sendError) {
+        console.error('Failed to send BLAST request:', sendError);
+        alert('Unable to start BLAST job. Please retry.');
+        hideLoading();
+    }
 });
 
 function showConfigAlert(type, message) {
@@ -505,6 +858,7 @@ document.getElementById('saveConfig').addEventListener('click', () => {
 });
 
 document.addEventListener('DOMContentLoaded', function() {
+    restoreUIFromStorage();
     fetch('/getconfig')
         .then(response => {
             if (!response.ok) {

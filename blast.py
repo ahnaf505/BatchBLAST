@@ -134,39 +134,63 @@ def write_fasta(fasta_string, folder_path):
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "inputs.fasta").write_text(fasta_string)
 
-async def run_blast_job(data, websocket):
+async def run_blast_job(data, notifier):
     content_ = ""
     try:
-        await websocket.send_text(json.dumps(["Running BLAST NCBI...", "Server is running mass BLAST operation."]))
+        await notifier(
+            "progress",
+            ["Running BLAST NCBI...", "Server is running mass BLAST operation."],
+        )
         rid, folder_path = await send_blast(data)
         write_fasta(data, folder_path)
         folder_display = folder_path.as_posix()
-        await websocket.send_text(json.dumps(["folderid", folder_display]))
-        await websocket.send_text(json.dumps(["Waiting for BLAST Result...", f"BLAST NCBI Request ID: {rid}", f"BatchBLAST ID: {folder_display}", " This may take up 5 minutes"]))
-        
+        await notifier("folder", {"folderId": folder_display})
+        await notifier(
+            "progress",
+            [
+                "Waiting for BLAST Result...",
+                f"BLAST NCBI Request ID: {rid}",
+                f"BatchBLAST ID: {folder_display}",
+                " This may take up 5 minutes",
+            ],
+        )
+
         while True:
             code, content = await check_blast(rid)
             if code == 0:
                 await asyncio.sleep(4)
                 continue
             elif code == 9:
-                await websocket.send_text(json.dumps(["Error", "An error occurred, please check error.log file."]))
+                await notifier(
+                    "error", ["Error", "An error occurred, please check error.log file."]
+                )
                 return
             elif code == 1:
                 content_ = content
                 break
-        
-        await websocket.send_text(json.dumps(["BLAST Completed...", "Processing result."]))
+
+        await notifier("progress", ["BLAST Completed...", "Processing result."])
         parse_blast(content_, folder_path)
-        await websocket.send_text(json.dumps(["Parsing Completed...", "BLAST Result successfully parsed, making reports."]))
+        await notifier(
+            "progress",
+            ["Parsing Completed...", "BLAST Result successfully parsed, making reports."],
+        )
         generate_report(folder_path)
         generate_blast_full_report(folder_path)
-        await websocket.send_text(json.dumps(["Successfully completed mass BLAST", "Mass BLAST is completed successfully and you can download the reports."]))
+        await notifier(
+            "complete",
+            [
+                "Successfully completed mass BLAST",
+                "Mass BLAST is completed successfully and you can download the reports.",
+            ],
+        )
     except Exception as e:
         with open("error.log", 'w+') as f:
                 f.write(str(e))
                 f.write(str(content_))
-        await websocket.send_text(json.dumps(["Error", f"An error occurred, please check error.log file."]))
+        await notifier(
+            "error", ["Error", "An error occurred, please check error.log file."]
+        )
 
 
 # ---- FIXES BELOW ----
@@ -175,4 +199,3 @@ async def run_blast_job(data, websocket):
 #data_bytes = poll.content
 #
 ## --- 2. Extract JSONs ---
-

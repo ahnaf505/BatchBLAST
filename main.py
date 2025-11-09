@@ -1,12 +1,17 @@
 import asyncio
+import json
+import secrets
 import zipfile
-#from search import search
+from collections import defaultdict
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Set
 
 from fastapi import FastAPI, WebSocket, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import FileResponse, StreamingResponse
+from starlette.websockets import WebSocketDisconnect
 from pydantic import BaseModel, Field
 import uvicorn
 from io import BytesIO
@@ -28,9 +33,149 @@ app = FastAPI()
 RESULTS_DIR = (Path.cwd() / "blast_res").resolve()
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Use current directory for templates
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+JOB_RETENTION_SECONDS = 60 * 60  # keep finished job logs for 1 hour
+job_states: Dict[str, Dict[str, Any]] = {}
+job_subscribers: Dict[str, Set[WebSocket]] = defaultdict(set)
+connection_jobs: Dict[WebSocket, Set[str]] = defaultdict(set)
+job_lock = asyncio.Lock()
+
+
+def _now() -> datetime:
+    return datetime.utcnow()
+
+
+def _parse_ws_payload(message: str) -> Dict[str, Any]:
+    try:
+        data = json.loads(message)
+    except json.JSONDecodeError:
+        return {"action": "start", "fasta": message}
+    return data
+
+
+async def _cleanup_expired_jobs() -> None:
+    cutoff = _now() - timedelta(seconds=JOB_RETENTION_SECONDS)
+    async with job_lock:
+        expired_ids = [
+            job_id
+            for job_id, state in job_states.items()
+            if state.get("status") in {"completed", "error"}
+            and state.get("last_update", _now()) < cutoff
+        ]
+        for job_id in expired_ids:
+            job_states.pop(job_id, None)
+            job_subscribers.pop(job_id, None)
+
+
+async def _create_job(job_id: str) -> None:
+    async with job_lock:
+        job_states[job_id] = {
+            "job_id": job_id,
+            "messages": [],
+            "folder_id": None,
+            "status": "running",
+            "created_at": _now(),
+            "last_update": _now(),
+        }
+
+
+async def _broadcast(subscribers: List[WebSocket], message: Dict[str, Any]) -> None:
+    serialized = json.dumps(message)
+    for ws in list(subscribers):
+        try:
+            await ws.send_text(serialized)
+        except Exception:
+            await unregister_connection(ws)
+            continue
+
+
+async def _send_ws_error(websocket: WebSocket, detail: str, job_id: Optional[str] = None) -> None:
+    payload = {
+        "type": "error",
+        "jobId": job_id,
+        "payload": [detail],
+        "timestamp": _now().isoformat(),
+    }
+    try:
+        await websocket.send_text(json.dumps(payload))
+    except Exception:
+        await unregister_connection(websocket)
+
+
+async def unsubscribe_connection(
+    websocket: WebSocket, job_id: Optional[str] = None
+) -> None:
+    async with job_lock:
+        if job_id is None:
+            tracked_jobs = connection_jobs.pop(websocket, set())
+            for tracked in tracked_jobs:
+                subscribers = job_subscribers.get(tracked)
+                if subscribers and websocket in subscribers:
+                    subscribers.remove(websocket)
+            return
+
+        if job_id in connection_jobs.get(websocket, set()):
+            connection_jobs[websocket].discard(job_id)
+        subscribers = job_subscribers.get(job_id)
+        if subscribers and websocket in subscribers:
+            subscribers.remove(websocket)
+
+
+async def unregister_connection(websocket: WebSocket) -> None:
+    """Remove a websocket from all subscriptions."""
+    await unsubscribe_connection(websocket)
+
+
+async def subscribe_connection(
+    websocket: WebSocket, job_id: str, replay: bool = True
+) -> None:
+    async with job_lock:
+        state = job_states.get(job_id)
+        if not state:
+            raise HTTPException(status_code=404, detail="Unknown job id")
+        job_subscribers[job_id].add(websocket)
+        connection_jobs[websocket].add(job_id)
+        history = list(state["messages"])
+
+    if replay:
+        for message in history:
+            try:
+                await websocket.send_text(json.dumps(message))
+            except Exception:
+                await unregister_connection(websocket)
+                break
+
+
+async def publish_job_event(job_id: str, event_type: str, payload: Any) -> None:
+    message = {
+        "type": event_type,
+        "jobId": job_id,
+        "payload": payload,
+        "timestamp": _now().isoformat(),
+    }
+
+    # Update job metadata for certain events.
+    async with job_lock:
+        state = job_states.get(job_id)
+        subscribers = list(job_subscribers.get(job_id, set()))
+        if state:
+            if event_type == "folder" and isinstance(payload, dict):
+                state["folder_id"] = payload.get("folderId")
+            if event_type == "complete":
+                state["status"] = "completed"
+            if event_type == "error":
+                state["status"] = "error"
+            state["last_update"] = _now()
+            # Keep history even if no subscribers for replay.
+            state["messages"].append(message)
+
+    await _broadcast(subscribers, message)
+
+    if event_type in {"complete", "error"}:
+        await _cleanup_expired_jobs()
 
 
 def resolve_results_folder(folder_id: str) -> Path:
@@ -165,14 +310,78 @@ async def download_endpoint(request: Request, type: int, folderid: str):
 @app.websocket("/")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    while True:
-        try:
-            data = await websocket.receive_text()
-            asyncio.create_task(run_blast_job(data, websocket))
+    try:
+        while True:
+            raw_message = await websocket.receive_text()
+            payload = _parse_ws_payload(raw_message)
+            action = str(payload.get("action", "start")).lower()
 
-        except Exception as e:
-            await websocket.close()
-            break
+            if action == "resume":
+                job_id = payload.get("jobId")
+                if not job_id:
+                    await _send_ws_error(websocket, "Missing job id for resume")
+                    continue
+                try:
+                    await subscribe_connection(websocket, job_id, replay=True)
+                except HTTPException:
+                    await _send_ws_error(websocket, "Unknown job id", job_id)
+                    continue
+
+                resume_ack = {
+                    "type": "resume_ack",
+                    "jobId": job_id,
+                    "timestamp": _now().isoformat(),
+                }
+                await websocket.send_text(json.dumps(resume_ack))
+                continue
+
+            if action != "start":
+                await _send_ws_error(websocket, f"Unknown action '{action}'")
+                continue
+
+            fasta_data = payload.get("fasta")
+            if not fasta_data or not str(fasta_data).strip():
+                await _send_ws_error(websocket, "Missing FASTA payload for job start")
+                continue
+
+            # ensure the connection only listens to the new job
+            await unsubscribe_connection(websocket)
+
+            requested_job = payload.get("jobId")
+            job_id: Optional[str] = None
+            while True:
+                candidate = requested_job or secrets.token_hex(8)
+                async with job_lock:
+                    if candidate not in job_states:
+                        job_id = candidate
+                        break
+                requested_job = None  # regenerate id if collision detected
+
+            await _create_job(job_id)
+            try:
+                await subscribe_connection(websocket, job_id, replay=False)
+            except HTTPException:
+                await _send_ws_error(websocket, "Unable to subscribe to job", job_id)
+                continue
+
+            async def notifier(event_type: str, event_payload: Any) -> None:
+                await publish_job_event(job_id, event_type, event_payload)
+
+            await publish_job_event(
+                job_id, "job_started", {"message": "BLAST job accepted"}
+            )
+            asyncio.create_task(run_blast_job(fasta_data, notifier))
+
+            ack_payload = {
+                "type": "job_ack",
+                "jobId": job_id,
+                "timestamp": _now().isoformat(),
+            }
+            await websocket.send_text(json.dumps(ack_payload))
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await unregister_connection(websocket)
 
 
 if __name__ == "__main__":
