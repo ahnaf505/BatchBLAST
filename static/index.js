@@ -26,6 +26,8 @@ const downloadFastaBtn = document.getElementById('downloadFasta');
 const downloadFullBtn = document.getElementById('downloadFull');
 const downloadAnomalyBtn = document.getElementById('downloadAnomaly');
 const downloadCSVBtn = document.getElementById('downloadCSV');
+const configAlert = document.getElementById('configAlert');
+let configAlertTimeout = null;
 
 let entries = [];
 let loadingStartTime = null;
@@ -420,6 +422,25 @@ document.getElementById('submitAll').addEventListener('click', () => {
     ws.send(fastaData);
 });
 
+function showConfigAlert(type, message) {
+  if (!configAlert) {
+    window.alert(message);
+    return;
+  }
+
+  configAlert.className = `alert alert-${type} position-fixed top-0 start-50 translate-middle-x shadow`;
+  configAlert.textContent = message;
+  configAlert.classList.remove('d-none');
+
+  if (configAlertTimeout) {
+    clearTimeout(configAlertTimeout);
+  }
+
+  configAlertTimeout = setTimeout(() => {
+    configAlert.classList.add('d-none');
+  }, 4000);
+}
+
 function setConfigValues(config) {
   const {
     database,
@@ -447,10 +468,40 @@ document.getElementById('saveConfig').addEventListener('click', () => {
     nonAnomaly: document.getElementById('nonAnomalyKeyword').value,
     speciesName: document.getElementById('speciesName').value
   };
-  console.log('Saved Configuration:', config);
-  // Add your saving logic here (e.g. API call)
-  const modal = bootstrap.Modal.getInstance(document.getElementById('configModal'));
-  modal.hide();
+
+  const missingField = Object.entries(config).find(([, value]) => !value);
+  if (missingField) {
+    showConfigAlert('warning', 'Please fill in all configuration fields before saving.');
+    return;
+  }
+
+  fetch('/saveconfig', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(config)
+  })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error('Failed to save configuration');
+      }
+      return response.json();
+    })
+    .then(data => {
+      if (data?.config) {
+        setConfigValues(data.config);
+      }
+
+      const modalElement = document.getElementById('configModal');
+      const modal = bootstrap.Modal.getOrCreateInstance(modalElement);
+      modal.hide();
+      showConfigAlert('success', 'Configuration saved successfully.');
+    })
+    .catch(error => {
+      console.error('Config save error:', error);
+      showConfigAlert('danger', 'Unable to save configuration. Please try again.');
+    });
 });
 
 document.addEventListener('DOMContentLoaded', function() {
@@ -462,16 +513,7 @@ document.addEventListener('DOMContentLoaded', function() {
             return response.json();
         })
         .then(data => {
-            const configJson = JSON.parse(data);
-            setConfigValues({
-              database: configJson[3],
-              program: configJson[2],
-              filterSelect: configJson[0],
-              outputQty: configJson[1],
-              nonAnomaly: configJson[4],
-              speciesName: configJson[5]
-            });
-
+            setConfigValues(data);
         })
         .catch(error => {
             console.error('Config fetch error:', error);

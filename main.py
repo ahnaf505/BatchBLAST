@@ -1,3 +1,5 @@
+import asyncio
+import zipfile
 #from search import search
 
 from fastapi import FastAPI, WebSocket, Request, HTTPException
@@ -5,10 +7,21 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel, Field
 import uvicorn
 from io import BytesIO
 from pathlib import Path
-from blast import *
+from CONFIG import load_config, save_config
+from blast import run_blast_job
+
+
+class ConfigPayload(BaseModel):
+    database: str = Field(..., min_length=1)
+    program: str = Field(..., min_length=1)
+    filterSelect: str = Field(..., min_length=1)
+    outputQty: int = Field(..., gt=0)
+    nonAnomaly: str = Field(..., min_length=1)
+    speciesName: str = Field(..., min_length=1)
 
 app = FastAPI()
 
@@ -38,9 +51,39 @@ def resolve_results_folder(folder_id: str) -> Path:
 async def get_home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
+def serialize_config():
+    filter_value, output_qty, program, database, non_anomaly, species_name = load_config()
+    try:
+        output_qty_value = int(output_qty)
+    except (TypeError, ValueError):
+        output_qty_value = output_qty
+
+    return {
+        "filterSelect": filter_value,
+        "outputQty": output_qty_value,
+        "program": program,
+        "database": database,
+        "nonAnomaly": non_anomaly,
+        "speciesName": species_name
+    }
+
+
 @app.get("/getconfig")
-async def getconfig(request: Request):
-    return json.dumps(load_config())
+async def getconfig():
+    return serialize_config()
+
+
+@app.post("/saveconfig")
+async def saveconfig(payload: ConfigPayload):
+    save_config(
+        payload.filterSelect,
+        str(payload.outputQty),
+        payload.program,
+        payload.database,
+        payload.nonAnomaly,
+        payload.speciesName
+    )
+    return {"status": "success", "config": serialize_config()}
 
 @app.get("/download")
 async def download_endpoint(request: Request, type: int, folderid: str):
